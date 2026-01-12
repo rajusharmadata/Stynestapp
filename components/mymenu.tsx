@@ -30,7 +30,7 @@ interface MenuItem {
 export default function MyMenu() {
   const { open, toggleMenu, translateX, overlayOpacity } = useMenu();
   const { logout, user } = useAuth();
-  console.log(user);
+  console.log(user?.avatar);
 
   const menuItems: MenuItem[] = [
     {
@@ -170,7 +170,9 @@ export default function MyMenu() {
           <View className="w-20 h-20 rounded-full bg-white  items-center justify-center mb-4">
             <Image
               source={{
-                uri: `https://ui-avatars.com/api/?name=${user?.name}&background=random&color=fff`,
+                uri:
+                  user?.avatar ||
+                  `https://ui-avatars.com/api/?name=${user?.name}&background=random&color=fff`,
               }}
               style={{
                 width: "100%",

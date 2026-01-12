@@ -1,4 +1,6 @@
+import { addFavoriteApi, removeFavoriteApi } from "@/api/Favorites";
 import { getAllListings } from "@/api/Listings";
+import { useAuth } from "@/context/AuthContext";
 import { router } from "expo-router";
 import { Heart, MapPin, Star } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -12,7 +14,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = width - 32;
 
@@ -39,7 +40,7 @@ export default function ListingCards({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
-
+  const { user, token } = useAuth();
   const loadListings = async (isRefresh = false) => {
     try {
       if (isRefresh) setRefreshing(true);
@@ -65,17 +66,33 @@ export default function ListingCards({
     loadListings(true);
   }, []);
 
-  const toggleFavorite = useCallback((id: string) => {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
+  const toggleFavorite = useCallback(
+    async (id: string) => {
+      // 1️⃣ Optimistic UI update
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+      if (!user || !token) return;
+      try {
+        // 2️⃣ Sync with backend
+        if (favorites.has(id)) {
+          await removeFavoriteApi(user?.id, id, token);
+        } else {
+          await addFavoriteApi(user?.id, id, token);
+        }
+      } catch (error) {
+        // 3️⃣ Rollback if API fails
+        setFavorites((prev) => {
+          const rollback = new Set(prev);
+          rollback.has(id) ? rollback.delete(id) : rollback.add(id);
+          return rollback;
+        });
       }
-      return next;
-    });
-  }, []);
+    },
+    [favorites]
+  );
 
   // Filter data based on selected category
   const filteredData = useMemo(() => {

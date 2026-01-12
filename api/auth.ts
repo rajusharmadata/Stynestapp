@@ -11,6 +11,7 @@ interface AuthResponse {
       name: string;
       email: string;
       avatar?: string;
+      favorites: string[];
       provider?: "local" | "google";
     };
   };

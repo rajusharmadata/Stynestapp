@@ -1,16 +1,19 @@
 // ============================================
-// FILE: context/AuthContext.tsx (IMPROVED VERSION)
+// FILE: context/AuthContext.tsx (FIXED VERSION)
 // ============================================
+
 import {
-  getCurrentUser as getCurrentUserApi,
+  getCurrentUser,
   login as loginApi,
   logout as logoutApi,
   refreshToken as refreshTokenApi,
   registerApi,
 } from "@/api/auth";
+import { addFavoriteApi, removeFavoriteApi } from "@/api/Favorites";
 import { AuthContextType, User } from "@/type/user";
 import { router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
+import { jwtDecode } from "jwt-decode";
 import React, {
   createContext,
   ReactNode,
@@ -21,19 +24,31 @@ import React, {
   useState,
 } from "react";
 import { Alert } from "react-native";
-// Types
 
+// ====================
+// CONSTANTS
+// ====================
+const TOKEN_KEY = "accessToken";
+const REFRESH_TOKEN_KEY = "refreshToken";
+const USER_KEY = "userData";
+
+interface JwtPayload {
+  id: string;
+  exp: number;
+}
+
+// ====================
+// CONTEXT
+// ====================
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 interface AuthProviderProps {
   children: ReactNode;
 }
 
-// Storage keys
-const TOKEN_KEY = "accessToken";
-const REFRESH_TOKEN_KEY = "refreshToken";
-const USER_KEY = "userData";
-
+// ====================
+// PROVIDER
+// ====================
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -48,141 +63,81 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     };
   }, []);
 
-  // Decode JWT token
-  const decodeToken = (
-    token: string
-  ): { user?: User; exp?: number; id?: string } | null => {
+  // ====================
+  // TOKEN HELPERS
+  // ====================
+  const decodeToken = (token: string): JwtPayload | null => {
     try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      return {
-        user: payload.user,
-        exp: payload.exp,
-        id: payload.id,
-      };
-    } catch (error) {
-      console.error("Token decode error:", error);
+      return jwtDecode<JwtPayload>(token);
+    } catch {
       return null;
     }
   };
 
-  // Check if token is expired
   const isTokenExpired = (token: string): boolean => {
     const decoded = decodeToken(token);
     if (!decoded?.exp) return true;
-
-    const now = Date.now() / 1000;
-    // Consider token expired 5 minutes before actual expiry
-    return decoded.exp - 300 < now;
+    return decoded.exp * 1000 < Date.now() + 5 * 60 * 1000;
   };
 
-  // Clear all auth data
+  // ====================
+  // STORAGE HELPERS
+  // ====================
   const clearAuthData = async () => {
-    try {
-      await Promise.all([
-        SecureStore.deleteItemAsync(TOKEN_KEY),
-        SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
-        SecureStore.deleteItemAsync(USER_KEY),
-      ]);
+    await Promise.all([
+      SecureStore.deleteItemAsync(TOKEN_KEY),
+      SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
+      SecureStore.deleteItemAsync(USER_KEY),
+    ]);
 
-      if (isMounted.current) {
-        setIsAuthenticated(false);
-        setUser(null);
-        setToken(null);
-      }
-    } catch (error) {
-      console.error("Error clearing auth data:", error);
+    if (isMounted.current) {
+      setIsAuthenticated(false);
+      setUser(null);
+      setToken(null);
     }
   };
 
-  // Save auth data
-  const saveAuthData = async (
-    accessToken: string,
-    refreshToken?: string,
-    userData?: User
-  ) => {
-    try {
-      await SecureStore.setItemAsync(TOKEN_KEY, accessToken);
-
-      if (refreshToken) {
-        await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken);
-      }
-
-      if (userData) {
-        await SecureStore.setItemAsync(USER_KEY, JSON.stringify(userData));
-      }
-
-      if (isMounted.current) {
-        setToken(accessToken);
-        setIsAuthenticated(true);
-        if (userData) {
-          setUser(userData);
-        }
-      }
-    } catch (error) {
-      console.error("Error saving auth data:", error);
-      throw new Error("Failed to save authentication data");
+  const saveAuthData = async (accessToken: string, refreshToken?: string) => {
+    await SecureStore.setItemAsync(TOKEN_KEY, accessToken);
+    if (refreshToken) {
+      await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken);
     }
-  };
 
-  // Fetch current user from API
-  const fetchCurrentUser = async (accessToken: string) => {
-    try {
-      const userData = await getCurrentUserApi(accessToken);
-
-      if (userData) {
-        await SecureStore.setItemAsync(USER_KEY, JSON.stringify(userData));
-
-        if (isMounted.current) {
-          setUser(userData);
-        }
-      }
-    } catch (error) {
-      console.error("Error fetching current user:", error);
-    }
-  };
-
-  // Validate and set token
-  const validateAndSetToken = async (accessToken: string) => {
-    try {
-      // Check if token is expired
-      if (isTokenExpired(accessToken)) {
-        await clearAuthData();
-        return false;
-      }
-
-      // Decode token to get user data
-      const decoded = decodeToken(accessToken);
-
+    if (isMounted.current) {
       setToken(accessToken);
       setIsAuthenticated(true);
-
-      // Try to get user from storage first
-      const storedUser = await SecureStore.getItemAsync(USER_KEY);
-      if (storedUser) {
-        setUser(JSON.parse(storedUser));
-      } else if (decoded?.user) {
-        setUser(decoded.user);
-      } else if (decoded?.id) {
-        // Fetch user data from API
-        await fetchCurrentUser(accessToken);
-      }
-
-      return true;
-    } catch (error) {
-      console.error("Token validation error:", error);
-      await clearAuthData();
-      return false;
     }
   };
 
+  // ====================
+  // FETCH USER
+  // ====================
+  const fetchAndSetUser = async (accessToken: string) => {
+    const userData = await getCurrentUser(accessToken);
+    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(userData));
+    if (isMounted.current) setUser(userData);
+  };
+
+  // ====================
+  // VALIDATE TOKEN
+  // ====================
+  const validateAndSetToken = async (accessToken: string) => {
+    if (isTokenExpired(accessToken)) return false;
+
+    await saveAuthData(accessToken);
+    await fetchAndSetUser(accessToken);
+    return true;
+  };
+
+  // ====================
+  // REFRESH TOKEN
+  // ====================
   const refreshToken = useCallback(async () => {
     try {
       const refreshTokenValue =
         await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
 
-      if (!refreshTokenValue) {
-        throw new Error("No refresh token available");
-      }
+      if (!refreshTokenValue) throw new Error("No refresh token");
 
       const response = await refreshTokenApi(refreshTokenValue);
 
@@ -191,196 +146,168 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           response.data.accessToken,
           response.data.refreshToken
         );
+        await validateAndSetToken(response.data.accessToken);
+      } else {
+        throw new Error("Refresh failed");
       }
     } catch (error) {
       console.error("Refresh token failed:", error);
+      await clearAuthData();
+      router.replace("/(auth)/login");
     }
   }, []);
 
-  // Bootstrap: Check for existing token on app start
+  // ====================
+  // BOOTSTRAP
+  // ====================
   useEffect(() => {
-    const bootstrapAsync = async () => {
+    const bootstrap = async () => {
       try {
-        const accessToken = await SecureStore.getItemAsync(TOKEN_KEY);
+        const storedToken = await SecureStore.getItemAsync(TOKEN_KEY);
+        if (!storedToken) return;
 
-        if (accessToken) {
-          // Check if token is expired
-          if (isTokenExpired(accessToken)) {
-            // Try to refresh token
-            await refreshToken();
-          } else {
-            await validateAndSetToken(accessToken);
-          }
+        if (isTokenExpired(storedToken)) {
+          await refreshToken();
+        } else {
+          await validateAndSetToken(storedToken);
         }
-      } catch (error) {
-        console.error("Auth bootstrap error:", error);
+      } catch {
         await clearAuthData();
       } finally {
-        if (isMounted.current) {
-          setLoading(false);
-        }
+        if (isMounted.current) setLoading(false);
       }
     };
 
-    bootstrapAsync();
+    bootstrap();
   }, []);
 
-  // Login
+  // ====================
+  // LOGIN
+  // ====================
   const login = async (email: string, password: string) => {
     if (authLoading) return;
-
     setAuthLoading(true);
 
     try {
       const response = await loginApi(email, password);
-
       if (!response.success || !response.data) {
-        throw new Error(response.error || "Login failed");
+        throw new Error(response.error);
       }
 
-      const { accessToken, refreshToken, user: userData } = response.data;
-      console.log(response.data);
+      await saveAuthData(response.data.accessToken, response.data.refreshToken);
+      await fetchAndSetUser(response.data.accessToken);
 
-      if (!accessToken) {
-        throw new Error("No access token received");
-      }
-
-      await saveAuthData(accessToken, refreshToken, userData);
-
-      // Navigate to main app
       router.replace("/(tabs)/home");
     } catch (error: any) {
-      console.error("Login error:", error);
-
-      Alert.alert(
-        "Login Failed",
-        error.message || "Unable to login. Please check your credentials."
-      );
-
+      Alert.alert("Login Failed", error.message);
       throw error;
     } finally {
-      if (isMounted.current) {
-        setAuthLoading(false);
-      }
+      if (isMounted.current) setAuthLoading(false);
     }
   };
 
-  // Register
+  // ====================
+  // REGISTER
+  // ====================
   const register = async (name: string, email: string, password: string) => {
     if (authLoading) return;
-
     setAuthLoading(true);
 
     try {
       const response = await registerApi(name, email, password);
-      console.log("register is callled");
-
       if (!response.success || !response.data) {
-        throw new Error(response.error || "Registration failed");
+        throw new Error(response.error);
       }
 
-      const { accessToken, refreshToken, user: userData } = response.data;
+      await saveAuthData(response.data.accessToken, response.data.refreshToken);
+      await fetchAndSetUser(response.data.accessToken);
 
-      if (!accessToken) {
-        throw new Error("Registration failed: No access token received");
-      }
-
-      await saveAuthData(accessToken, refreshToken, userData);
-
-      // Navigate to main app
-      router.replace("/(auth)/login");
+      router.replace("/(tabs)/home");
     } catch (error: any) {
-      console.error("Registration error:", error);
-
-      Alert.alert(
-        "Registration Failed",
-        error.message || "Unable to create account. Please try again."
-      );
-
+      Alert.alert("Registration Failed", error.message);
       throw error;
     } finally {
-      if (isMounted.current) {
-        setAuthLoading(false);
-      }
+      if (isMounted.current) setAuthLoading(false);
     }
   };
 
-  // Logout
+  // ====================
+  // LOGOUT
+  // ====================
   const logout = async () => {
-    if (authLoading) return;
+    try {
+      const accessToken = await SecureStore.getItemAsync(TOKEN_KEY);
+      if (accessToken) await logoutApi(accessToken);
+    } catch {
+      // ignore
+    } finally {
+      await clearAuthData();
+      router.replace("/(auth)/login");
+    }
+  };
 
-    setAuthLoading(true);
+  // ====================
+  // toggle favorites
+
+  const toggleFavorite = async (listingId: string) => {
+    if (!user || !token) return;
+
+    const isFavorite = user.favorites.includes(listingId);
+
+    // 🔥 Optimistic UI update
+    const updatedFavorites = isFavorite
+      ? user.favorites.filter((id) => id !== listingId)
+      : [...user.favorites, listingId];
+
+    const optimisticUser = {
+      ...user,
+      favorites: updatedFavorites,
+    };
+
+    setUser(optimisticUser);
+    await SecureStore.setItemAsync("userData", JSON.stringify(optimisticUser));
 
     try {
-      // Get token before clearing
-      const accessToken = await SecureStore.getItemAsync(TOKEN_KEY);
-
-      // Call logout API if token exists
-      if (accessToken) {
-        try {
-          await logoutApi(accessToken);
-        } catch (error) {
-          console.warn("Logout API failed (may be offline):", error);
-          // Continue with local logout anyway
-        }
+      if (isFavorite) {
+        await removeFavoriteApi(user.id, listingId, token);
+      } else {
+        await addFavoriteApi(user.id, listingId, token);
       }
-
-      // Clear all local data
-      await clearAuthData();
-
-      // Show success message
-      Alert.alert("Logged Out", "You have been successfully logged out.");
-
-      // Navigate to login screen
-      router.replace("/(auth)/login");
     } catch (error) {
-      console.error("Logout error:", error);
-
-      // Even if something fails, clear local data
-      await clearAuthData();
-      router.replace("/(auth)/login");
-    } finally {
-      if (isMounted.current) {
-        setAuthLoading(false);
-      }
+      // ❌ Rollback if API fails
+      setUser(user);
+      await SecureStore.setItemAsync("userData", JSON.stringify(user));
     }
   };
 
-  // Update user data
-  const updateUser = useCallback((userData: Partial<User>) => {
-    setUser((prevUser) => {
-      if (!prevUser) return null;
+  // ====================
 
-      const updatedUser = { ...prevUser, ...userData };
-
-      // Save to storage
-      SecureStore.setItemAsync(USER_KEY, JSON.stringify(updatedUser));
-
-      return updatedUser;
-    });
-  }, []);
-
-  const value = {
+  // ====================
+  // CONTEXT VALUE
+  // ====================
+  const value: AuthContextType = {
     isAuthenticated,
     user,
+    token,
     loading,
     authLoading,
-    token,
     login,
     register,
     logout,
     refreshToken,
-    updateUser,
+    toggleFavorite,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-// Custom hook
+// ====================
+// HOOK
+// ====================
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    throw new Error("useAuth must be used within AuthProvider");
   }
   return context;
 };

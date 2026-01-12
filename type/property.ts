@@ -17,3 +17,12 @@ export interface PropertyDetails {
     verified?: boolean;
   };
 }
+
+export interface FavoriteListing {
+  id: string;
+  title: string;
+  location: string;
+  price: number;
+  image: string;
+  rating?: number;
+}
